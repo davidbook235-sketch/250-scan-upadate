@@ -1,1 +1,31 @@
+name: Nifty250 Scan -> Telegram
 
+on:
+  schedule:
+    - cron: "50 9 * * 1-5"        # 15:20 IST  -> swing scan
+    - cron: "*/30 4-9 * * 1-5"    # har 30 min (9:30-15:30 IST) -> intraday scan
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "swing ya intraday"
+        default: "swing"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    env:
+      SCAN_MODE: ${{ github.event.inputs.mode || (github.event.schedule == '50 9 * * 1-5' && 'swing' || 'intraday') }}
+      ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
+      ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
+      ANGEL_PIN: ${{ secrets.ANGEL_PIN }}
+      ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python run_scan.py
