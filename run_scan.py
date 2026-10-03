@@ -13,7 +13,7 @@ if mode == "intraday" and not core.market_open():
     sys.exit(0)
 
 angel = core.Angel(g("ANGEL_API_KEY"), g("ANGEL_CLIENT_ID"), g("ANGEL_PIN"), g("ANGEL_TOTP_SECRET"))
-res = core.run_scan(angel.candles, core.load_universe(), core.load_tokens(), mode, interval,
+res = core.run_scan(angel.candles, core.load_universe(os.environ.get("UNIVERSE", core.DEFAULT_UNIVERSE)), core.load_tokens(), mode, interval,
                     dict(core.DEFAULT_P), ttl=60)
 print(f"{res['scanned']} scanned | regime {res['regime']['state']} | BUY: "
       f"{(res['table']['Signal'] == 'BUY').sum() if not res['table'].empty else 0}")

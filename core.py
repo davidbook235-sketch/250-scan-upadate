@@ -17,7 +17,13 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 IST = ZoneInfo("Asia/Kolkata")
 SCRIP_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-UNIVERSE_URL = "https://niftyindices.com/IndexConstituent/ind_niftylargemidcap250list.csv"
+_NI = "https://niftyindices.com/IndexConstituent/"
+UNIVERSES = {
+    "Nifty Smallcap 250": (_NI + "ind_niftysmallcap250list.csv", "universe_smallcap250.csv"),
+    "Nifty LargeMidcap 250": (_NI + "ind_niftylargemidcap250list.csv", "universe_largemidcap250.csv"),
+    "Nifty 500": (_NI + "ind_nifty500list.csv", "universe_nifty500.csv"),
+}
+DEFAULT_UNIVERSE = "Nifty Smallcap 250"
 NIFTY_TOKEN = "99926000"  # NSE Nifty 50 index token (Angel One)
 UA = {"User-Agent": "Mozilla/5.0"}
 
@@ -192,7 +198,7 @@ def analyse(sym, df, mode, P):
 def finalize(rows, universe, regime, P, mode):
     tbl = pd.DataFrame(rows)
     if tbl.empty:
-        return tbl
+        return tbl, tbl
     smap = dict(zip(universe["Symbol"], universe.get("Sector", pd.Series(["Unknown"] * len(universe)))))
     tbl["Sector"] = tbl["Symbol"].map(smap).fillna("Unknown")
     sec = tbl[tbl["Sector"] != "Unknown"].groupby("Sector")["Ret"].median()
@@ -218,10 +224,11 @@ def finalize(rows, universe, regime, P, mode):
             sigs.append("-")
         blocked.append(", ".join(fails) if r["Score"] >= P["score_buy"] else "")
     tbl["Signal"], tbl["Blocked"] = sigs, blocked
+    full = tbl.copy()
     tbl = tbl[tbl["Signal"] != "-"].copy()
     tbl["_o"] = tbl["Signal"].map({"BUY": 0, "WATCH": 1})
     tbl = tbl.sort_values(["_o", "Score", "ADX"], ascending=[True, False, False]).drop(columns="_o")
-    return tbl.reset_index(drop=True)
+    return tbl.reset_index(drop=True), full
 
 
 def run_scan(fetch, universe, tokens, mode, interval, P, topn=250, progress=None, ttl=300):
@@ -231,7 +238,7 @@ def run_scan(fetch, universe, tokens, mode, interval, P, topn=250, progress=None
     iv, days = ("ONE_DAY", 400) if mode == "swing" else (interval, 12)
     mins = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "THIRTY_MINUTE": 30}.get(iv, 0)
     uni = universe.head(topn)
-    rows, frames, missing = [], {}, []
+    raw, missing = {}, []
     n = len(uni)
     for i, sym in enumerate(uni["Symbol"], 1):
         if progress:
@@ -244,16 +251,23 @@ def run_scan(fetch, universe, tokens, mode, interval, P, topn=250, progress=None
             df = cached((tok, iv, days), ttl, lambda: fetch(tok, iv, days))
             if mode == "intraday" and mins:
                 df = df[df.index + pd.Timedelta(minutes=mins) <= now_ist()]
-            row, d = analyse(sym, df, mode, P)
+            raw[sym] = df
         except Exception as e:  # noqa: BLE001
             missing.append(f"{sym} ({str(e)[:40]})")
-            continue
+    res = dict(raw=raw, uni=uni, regime=regime, missing=missing, mode=mode, time=now_ist(), fetched=len(raw))
+    return rescore(res, P)
+
+
+def rescore(res, P):
+    """Filters / score settings badalne par dobara data fetch kiye bina result recompute."""
+    rows, frames = [], {}
+    for sym, df in res["raw"].items():
+        row, d = analyse(sym, df, res["mode"], P)
         if row:
             rows.append(row)
             frames[sym] = d
-    tbl = finalize(rows, uni, regime, P, mode)
-    return dict(table=tbl, frames=frames, regime=regime, missing=missing, mode=mode,
-                time=now_ist(), scanned=len(rows))
+    tbl, full = finalize(rows, res["uni"], res["regime"], P, res["mode"])
+    return {**res, "table": tbl, "full": full, "frames": frames, "scanned": len(rows)}
 
 
 _CACHE = {}
@@ -537,22 +551,28 @@ def load_tokens(path="tokens_nse.json"):
         return json.load(open(path)) if os.path.exists(path) else {}
 
 
-def load_universe(path="universe.csv", fetch=True):
-    """Nifty LargeMidcap 250 list (with sector). Falls back to universe.csv."""
+def load_universe(name=DEFAULT_UNIVERSE, fetch=True):
+    """Index list + sector. Order: niftyindices live -> saved copy -> universe.csv seed.
+    df.attrs['source'] tells which one was used."""
+    url, path = UNIVERSES.get(name, UNIVERSES[DEFAULT_UNIVERSE])
     if fetch:
         try:
-            r = requests.get(UNIVERSE_URL, headers=UA, timeout=20)
+            r = requests.get(url, headers=UA, timeout=20)
             r.raise_for_status()
             u = pd.read_csv(io.StringIO(r.text)).rename(columns={"Industry": "Sector"})
             u = u[["Symbol", "Sector"]].dropna()
             u.to_csv(path, index=False)
+            u.attrs["source"] = "live"
             return u
         except Exception:  # noqa: BLE001
             pass
-    u = pd.read_csv(path)
+    src = "saved" if os.path.exists(path) else "fallback"
+    u = pd.read_csv(path if src == "saved" else "universe.csv")
     if "Sector" not in u:
         u["Sector"] = "Unknown"
-    return u[["Symbol", "Sector"]]
+    u = u[["Symbol", "Sector"]].copy()
+    u.attrs["source"] = src
+    return u
 
 
 # --------------------------------------------------------------------------- demo feed (offline test)

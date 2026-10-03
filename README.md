@@ -5,7 +5,7 @@ Swing (1D) aur Intraday scanner. Strategy aapki CSV wali hi hai: 5 conditions ka
 SL = 1.5×ATR, Target = 1:2 (Settings me badal sakte ho).
 
 ## Features
-- Angel One SmartAPI se live candles, Nifty LargeMidcap 250 list (sector ke saath) auto-fetch
+- Angel One SmartAPI se live candles, stock list (Smallcap 250 / LargeMidcap 250 / Nifty 500, sector ke saath) auto-fetch
 - ON/OFF filters: **ADX**, **Nifty regime** (Nifty > EMA50 & EMA20>EMA50), **Sector strength**
 - Top 5 BUY ke chart (Support/Resistance, Entry/SL/Target) Telegram par
 - Live auto-scan (5–30 min), CSV download

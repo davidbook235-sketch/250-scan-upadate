@@ -43,7 +43,8 @@ with st.expander("⚙️ Settings", expanded=False):
     atr_mult = s4.number_input("SL = ATR x", 0.5, 4.0, 1.5, 0.1)
     rr = s5.number_input("Reward:Risk", 1.0, 5.0, 2.0, 0.5)
     st.markdown("**Scan / Alerts**")
-    topn = st.slider("Kitne stocks scan karne hain", 20, 250, 250, 10)
+    uni_name = st.selectbox("Stock list", list(core.UNIVERSES), index=0)
+    topn = st.slider("Kitne stocks scan karne hain", 20, 500, 500, 10)
     auto = st.toggle("🔄 Live auto-scan", False)
     every = st.slider("Auto-scan har (min)", 5, 30, 10, disabled=not auto)
     tg_auto = st.toggle("📨 Naye BUY par Telegram auto-send", False)
@@ -63,9 +64,9 @@ def angel_login(k, c, p, t):
     return core.Angel(k, c, p, t)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def universe():
-    return core.load_universe()
+@st.cache_data(ttl=6 * 3600, show_spinner="Stock list load ho rahi hai...")
+def universe(name):
+    return core.load_universe(name)
 
 
 @st.cache_resource(ttl=86400, show_spinner="Token list load ho rahi hai...")
@@ -75,7 +76,7 @@ def tokens():
 
 def get_feed():
     if demo:
-        return core.demo_fetch, {s: s for s in universe()["Symbol"]}
+        return core.demo_fetch, {s: s for s in uni()["Symbol"]}
     keys = [cred(k) for k in ("ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PIN", "ANGEL_TOTP_SECRET")]
     if not all(keys):
         st.error("Angel One keys nahi mili. Setup tab me daalo (ya Demo ON karo).")
@@ -85,7 +86,7 @@ def get_feed():
 
 def uni():
     u = ss.get("uni_override")
-    return u if u is not None else universe()
+    return u if u is not None else universe(uni_name)
 
 
 def do_scan():
@@ -95,7 +96,7 @@ def do_scan():
     res = core.run_scan(fetch, uni(), tok, mode, interval, P, topn,
                         progress=lambda i, n, s: bar.progress(i / n, text=f"{s}  ({i}/{n})"), ttl=ttl)
     bar.empty()
-    ss.res, ss.last_scan = res, time.time()
+    ss.res, ss.last_scan, ss.res_key = res, time.time(), (tuple(sorted(P.items())), mode)
     ss.top5 = core.build_top5(res)
     if tg_auto:
         send_telegram(only_new=True)
@@ -132,6 +133,13 @@ with tab1:
         do_scan()
 
     res = ss.res
+    key = (tuple(sorted(P.items())), mode)
+    if res is not None and res["mode"] != mode:
+        st.warning(f"Ye result **{res['mode']}** scan ka hai. Mode badla hai — dobara **Scan Now** dabao.")
+        res = None
+    elif res is not None and ss.get("res_key") != key:
+        res = ss.res = core.rescore(res, P)   # filters/score badle -> data dobara fetch kiye bina recompute
+        ss.res_key, ss.top5 = key, core.build_top5(res)
     if res is None:
         st.info("Settings check karke **Scan Now** dabao.")
     else:
@@ -141,8 +149,29 @@ with tab1:
                     f"EMA20 {rg['ema20']:.0f} | EMA50 {rg['ema50']:.0f}")
         t = res["table"]
         nb = int((t["Signal"] == "BUY").sum()) if not t.empty else 0
-        st.caption(f"Scan {res['time']:%H:%M:%S} • {res['scanned']} stocks • {nb} BUY • "
+        st.caption(f"Scan {res['time']:%H:%M:%S} • {uni_name} • {res['scanned']} stocks • {nb} BUY • "
                    f"{len(t) - nb} WATCH • {len(res['missing'])} skip")
+        on = [n for n, v in (("ADX", adx_on), ("Nifty regime", regime_on), ("Sector", sector_on)) if v]
+        st.caption("Filters ON: " + (", ".join(on) if on else "koi nahi (sirf score)") +
+                   "  •  Filter badalne par result turant update hota hai.")
+        src = getattr(res["uni"], "attrs", {}).get("source")
+        if src == "fallback" and not ss.get("uni_override") and not demo:
+            st.error("Stock list niftyindices se load nahi hui, sirf 17 symbols ki backup list use ho rahi hai. "
+                     "Setup tab me apni CSV upload karo ya baad me dobara try karo.")
+        full = res.get("full")
+        if full is not None and not full.empty:
+            with st.expander("🔎 BUY kyun nahi aa raha? (diagnosis)", expanded=(nb == 0)):
+                dist = full["Score"].value_counts().reindex([5, 4, 3, 2, 1, 0], fill_value=0)
+                st.write("**Score distribution** (scanned stocks): " +
+                         "  |  ".join(f"{k}/5: {v}" for k, v in dist.items()))
+                cand = full[full["Score"] >= score_buy]
+                if len(cand) and nb == 0:
+                    st.write(f"Score {score_buy}+ wale {len(cand)} stocks filter se block hue: " +
+                             ", ".join(f"{r.Symbol} ({r.Blocked})" for r in cand.itertuples()))
+                elif len(cand) == 0:
+                    st.write(f"Koi stock {score_buy}/5 tak nahi pahuncha (max score {int(full['Score'].max())}). "
+                             "Filter ka isme koi role nahi hai — market me setup hi nahi bana. "
+                             "BUY min score 3 karke ya Stock list badal kar dekho.")
         if t.empty:
             st.warning("Is waqt koi BUY/WATCH signal nahi mila.")
         else:
@@ -173,7 +202,7 @@ with tab2:
     default_syms = []
     if ss.res is not None and not ss.res["table"].empty:
         default_syms = list(ss.res["table"].head(10)["Symbol"])
-    syms = st.multiselect("Stocks", list(uni()["Symbol"]), default=default_syms or list(uni()["Symbol"][:5]))
+    syms = st.multiselect("Stocks", list(uni()["Symbol"]), default=[x for x in (default_syms or list(uni()["Symbol"][:5])) if x in set(uni()["Symbol"])])
     b1, b2 = st.columns(2)
     days = b1.slider("History (days)", 90 if mode == "swing" else 10, 1000 if mode == "swing" else 90,
                      500 if mode == "swing" else 30)
@@ -228,4 +257,4 @@ with tab3:
         u["Sector"] = u["Sector"] if "Sector" in u else "Unknown"
         ss.uni_override = u[["Symbol", "Sector"]]
         st.success(f"{len(u)} symbols load ho gaye.")
-    st.caption(f"Universe: {len(uni())} symbols (Nifty LargeMidcap 250 auto-fetch, fail ho to universe.csv).")
+    st.caption(f"Universe: {uni_name} — {len(uni())} symbols (niftyindices se auto-fetch).")
